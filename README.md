@@ -21,14 +21,14 @@ The version of Kotlin this mod will use and this mod embedding.
 ### `MCKT-KT-Parts`
 The name of libraries this mod will use and this mod embedding.
 Must be comma separated string with either `annotations`(means jetbrains annotations depended on from `kotlin-stdlib`), 
-`kotlin-stdlib`, `kotlin-stdlib-jdk7`, `kotlin-stdlib-jdk8`, or `kotlin-reflect`.
-For example, `annotations,kotlin-stdlib,kotlin-stdlib-jdk7`.
+`kotlin-stdlib-common`, `kotlin-stdlib`, `kotlin-stdlib-jdk7`, `kotlin-stdlib-jdk8`, or `kotlin-reflect`.
+For example, `annotations,kotlin-stdlib-common,kotlin-stdlib,kotlin-stdlib-jdk7`.
 
 ### `MCKT-KT-Jars`
 The path from jar root to embedding kotlin jar.
 If this exists, you must embed all parts of kotlin.
 The order of jars must be same as `MCKT-KT-Parts`.
-For example, `libs/annotations-13.0.jar,libs/kotlin-stdlib-1.4.30.jar,libs/kotlin-stdlib-jdk7-1.4.30.jar`
+For example, `libs/annotations-13.0.jar,libs/kotlin-stdlib-common-1.4.30.jar,libs/kotlin-stdlib-1.4.30.jar,libs/kotlin-stdlib-jdk7-1.4.30.jar`
 
 # Example configuration
 

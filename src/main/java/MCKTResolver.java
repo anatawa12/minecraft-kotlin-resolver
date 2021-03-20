@@ -649,8 +649,9 @@ public class MCKTResolver {
       KotlinStdlib(q("<kotlin-stdlib>"), q("<kotlin/Pair.class>"), q("<org.jetbrains.kotlin>")),
       KotlinStdlibJdk7(q("<kotlin-stdlib-jdk7>"), q("<kotlin/internal/jdk7/JDK7PlatformImplementations.class>"), q("<org.jetbrains.kotlin>")),
       KotlinStdlibJdk8(q("<kotlin-stdlib-jdk8>"), q("<kotlin/internal/jdk8/JDK8PlatformImplementations.class>"), q("<org.jetbrains.kotlin>")),
+      KotlinStdlibCommon(q("<kotlin-stdlib-common>"), q("<kotlin/Pair.kotlin_metadata>"), q("<org.jetbrains.kotlin>")),
       KotlinReflect(q("<kotlin-reflect>"), q("<kotlin/reflect/ReflectJvmMapping.class>"), q("<org.jetbrains.kotlin>")),
-      JetbrainsAnnotation(q("<jetbrains-annotations>"), q("<org/jetbrains/annotations/Nullable.class>"), q("<org.jetbrains>"), q("<annotations>")) {
+      JetbrainsAnnotation(q("<annotations>"), q("<org/jetbrains/annotations/Nullable.class>"), q("<org.jetbrains>"), q("<annotations>")) {
          @Override
          String getVersionOf(String version) {
             return "13.0";
