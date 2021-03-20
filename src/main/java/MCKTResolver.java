@@ -67,13 +67,28 @@ import java.util.jar.Manifest;
         "unused", "RedundantSuppression", "JavacQuirks", "NullableProblems",
         "TryWithIdenticalCatches", "TryFinallyCanBeTryWithResources",
         "Convert2Diamond", "Convert2Lambda", "UseCompareMethod",
+        "ResultOfMethodCallIgnored",
 })
 public class MCKTResolver {
    private MCKTResolver() {
    }
 
+   static {
+      // load classes first
+      ResolveCaller.staticInit();
+      Resolver.staticInit();
+      SingleJarClassLoader.staticInit();
+      GradleKotlinCacheFinder.staticInit();
+      MavenKotlinCacheFinder.staticInit();
+      MCKTKotlinCacheFinder.staticInit();
+      DigesterOutputStream.staticInit();
+      KotlinLibrary.staticInit();
+      KotlinVersion.staticInit();
+   }
+
    @SuppressWarnings("unused")
    public static void requestResolve() {
+      Launch.classLoader.addClassLoaderExclusion("kotlin.");
       Double version = getDouble(resolverVersionPropName);
       if (version == null) {
          @SuppressWarnings("unchecked")
@@ -108,21 +123,29 @@ public class MCKTResolver {
    }
 
    public static class ResolveCaller implements ITweaker {
+      boolean run = false;
+
+      public ResolveCaller() {
+         @SuppressWarnings("unchecked")
+         List<ITweaker> tweakers = (List<ITweaker>) Launch.blackboard.get("Tweaks");
+         // add first
+         tweakers.add(0, this);
+      }
+
       @Override
       public void acceptOptions(List<String> args, File gameDir, File assetsDir, String profile) {
+         if (run) return;
+         run = true;
          String className = System.getProperty(resolverNamePropName);
-         boolean nogui = GraphicsEnvironment.isHeadless();
-         for (String arg : args) {
-            if ("--nogui".equals(arg) || "nogui".equals(arg)) {
-               nogui = true;
-               break;
-            }
-         }
          try {
             Class<?> resolver = Class.forName(className);
-            Method runResolve = resolver.getDeclaredMethod("runResolve", boolean.class);
+            Method runResolve = resolver.getDeclaredMethod("runResolve",
+                    List.class,
+                    File.class,
+                    File.class,
+                    String.class);
             runResolve.setAccessible(true);
-            runResolve.invoke(null, nogui);
+            runResolve.invoke(null, args, gameDir, assetsDir, profile);
          } catch (ClassNotFoundException e) {
             throw new IllegalStateException(e.getMessage(), e);
          } catch (InvocationTargetException e) {
@@ -150,30 +173,49 @@ public class MCKTResolver {
       public String[] getLaunchArguments() {
          return new String[0];
       }
+
+      public static void staticInit() {
+      }
    }
 
    static class Resolver {
       int[] version;
       EnumSet<KotlinLibrary> libs = EnumSet.noneOf(KotlinLibrary.class);
-      EnumMap<KotlinLibrary, URI> bundledElements = new EnumMap<KotlinLibrary, URI>(KotlinLibrary.class);
+      EnumMap<KotlinLibrary, URL> bundledElements = new EnumMap<KotlinLibrary, URL>(KotlinLibrary.class);
       KotlinCacheFinder[] finders = new KotlinCacheFinder[] {
               new GradleKotlinCacheFinder(),
               new MavenKotlinCacheFinder(),
               new MCKTKotlinCacheFinder(),
       };
 
+      static void runResolve(List<String> args, File gameDir, File assetsDir, String profile) throws MalformedURLException {
+         boolean nogui = GraphicsEnvironment.isHeadless();
+         for (String arg : args) {
+            if ("--nogui".equals(arg) || "nogui".equals(arg)) {
+               nogui = true;
+               break;
+            }
+         }
+         new Resolver().runResolve(nogui);
+      }
+
       void runResolve(boolean nogui) throws MalformedURLException {
          collectKotlinMods();
 
+         String version = this.version[0] + "." + this.version[1] + "." + this.version[2];
+
+         log("Kotlin version " + version + " with " + libs + "found!");
+
          EnumSet<KotlinLibrary> libraries = candidateDownloads();
 
-         String version = this.version[0] + "." + this.version[2] + "." + this.version[3];
+         log(libraries + " missing in jars! Try cache then download!");
 
          for (KotlinLibrary library : libraries) {
             for (KotlinCacheFinder finder : finders) {
                File file = finder.find(library, version);
                if (file != null) {
-                  bundledElements.put(library, file.toURI());
+                  log("cache found for " + library + " with " + finder);
+                  bundledElements.put(library, file.toURI().toURL());
                   break;
                }
             }
@@ -186,15 +228,40 @@ public class MCKTResolver {
                } catch (IOException e) {
                   throw new RuntimeException(e.getMessage(), e);
                }
-               bundledElements.put(library, downloaded.toURI());
+               log("downloaded " + library);
+               bundledElements.put(library, downloaded.toURI().toURL());
+            }
+         }
+
+         for (Map.Entry<KotlinLibrary, URL> entry : bundledElements.entrySet()) {
+            log("copying jar in jar from " + entry.getKey());
+            URL value = entry.getValue();
+            if (value.getProtocol().equals("jar")) {
+               try {
+                  File file = File.createTempFile("mckt", ".jar");
+                  InputStream in = null;
+                  OutputStream out = null;
+                  DigesterOutputStream digester = new DigesterOutputStream(getSha1());
+                  try {
+                     in = new BufferedInputStream(value.openStream());
+                     out = new BufferedOutputStream(new FileOutputStream(file));
+                     copy(in, out, digester);
+                  } finally {
+                     if (in != null) in.close();
+                     if (out != null) out.close();
+                  }
+                  entry.setValue(file.toURI().toURL());
+               } catch (IOException e) {
+                  e.printStackTrace();
+               }
             }
          }
 
          try {
             Method addUrl = URLClassLoader.class.getDeclaredMethod("addURL", URL.class);
             addUrl.setAccessible(true);
-            for (URI value : bundledElements.values()) {
-               addUrl.invoke(parentLoader, value.toURL());
+            for (URL value : bundledElements.values()) {
+               addUrl.invoke(parentLoader, value);
             }
          } catch (NoSuchMethodException e) {
             throw new RuntimeException(e);
@@ -209,6 +276,7 @@ public class MCKTResolver {
       File download(KotlinLibrary library, String version) throws IOException {
          File writeTo = MCKTKotlinCacheFinder.getCacheFile(library, version);
          String url = "https://repo1.maven.org/maven2/" + library.architectPath(version);
+         writeTo.getParentFile().mkdirs();
          InputStream in = null;
          OutputStream out = null;
          DigesterOutputStream digester = new DigesterOutputStream(getSha1());
@@ -235,7 +303,7 @@ public class MCKTResolver {
       EnumSet<KotlinLibrary> candidateDownloads() {
          EnumSet<KotlinLibrary> willDownload = EnumSet.noneOf(KotlinLibrary.class);
          willDownload.addAll(libs);
-         willDownload.addAll(bundledElements.keySet());
+         willDownload.removeAll(bundledElements.keySet());
          return willDownload;
       }
 
@@ -258,8 +326,9 @@ public class MCKTResolver {
       void collectKotlinInMod(File mod) {
          try {
             JarFile jarFile = new JarFile(mod);
-            shadowedKotlinInMod(jarFile);
+            shadowedKotlinInMod(mod, jarFile);
             Manifest manifest = jarFile.getManifest();
+            if (manifest == null) return;
             Attributes root = manifest.getMainAttributes();
             String mfVersion = root.getValue("MCKT-MF-Version");
             if (mfVersion == null) return;
@@ -271,17 +340,21 @@ public class MCKTResolver {
 
             if (mfVersionIn == null)
                throw new IllegalStateException("Unsupported MCKT manifest version: " + mfVersion);
-            if (mfVersionIn <= MANIFEST_VERSION)
+            if (mfVersionIn > MANIFEST_VERSION)
                throw new IllegalStateException("Unsupported MCKT manifest version: " + mfVersion);
             if (ktVersion == null)
                throw new IllegalStateException("invalid MCKT manifest: MCKT-KT-Version is not specified");
-            if (version == null)
-               throw new IllegalStateException("invalid MCKT manifest: MCKT-KT-Version is not parsable: " + ktVersion);
 
             int[] version = KotlinVersion.parse(ktVersion);
             addVersion(version);
 
+            if (version == null)
+               throw new IllegalStateException("invalid MCKT manifest: MCKT-KT-Version is not parsable: " + ktVersion);
+
+            log("MCKT Manifest Kotlin version " + ktVersion + " found in " + mod.getName());
+
             if (parts == null) {
+               log("MCKT Manifest without parts found in " + mod.getName());
                this.libs.addAll(defaultLibs);
             } else {
                URI jarUri = mod.toURI();
@@ -298,21 +371,23 @@ public class MCKTResolver {
                   KotlinLibrary lib = KotlinLibrary.byName.get(part);
                   if (lib == null) throw new IllegalStateException("unknown library key: " + part);
 
+                  log("MCKT Manifest " + lib.libName + " found in " + mod.getName());
                   this.libs.add(lib);
-                  if (jar != null) bundledElements.put(lib, URI.create("jar:" + jarUri + "!/" + jar));
+                  if (jar != null) bundledElements.put(lib, URI.create("jar:" + jarUri + "!/" + jar).toURL());
                }
             }
          } catch (IOException ignored) {
          }
       }
 
-      void shadowedKotlinInMod(JarFile jar) {
+      void shadowedKotlinInMod(File mod, JarFile jar) {
          boolean hasKotlinStdlib = false;
          for (KotlinLibrary value : KotlinLibrary.VALUES) {
             if (jar.getEntry(value.detectClassFileName) == null) continue;
 
             if (value == KotlinLibrary.KotlinStdlib)
                hasKotlinStdlib = true;
+            log("Shadowed " + value.libName + " found in " + mod.getName());
             this.libs.add(value);
          }
 
@@ -322,43 +397,17 @@ public class MCKTResolver {
          }
 
          if (kotlinVersion != null) {
+            log("Shadowed Kotlin version " + kotlinVersion + " found in " + mod.getName());
             addVersion(KotlinVersion.parseVersionNullable(kotlinVersion));
          }
       }
 
       String detectKotlinVersion(JarFile jar) {
-         class Loader extends ClassLoader {
-            JarFile jar;
-
-            @Override
-            protected Class<?> findClass(String name) throws ClassNotFoundException {
-               JarFile jar = this.jar;
-               if (jar == null) throw new ClassNotFoundException(name);
-               JarEntry entry = jar.getJarEntry(name.replace('.', '/') + ".class");
-               if (entry == null) return super.findClass(name);
-               ByteArrayOutputStream stream = new ByteArrayOutputStream();
-
-               try {
-                  InputStream inputStream = null;
-                  try {
-                     inputStream = new BufferedInputStream(jar.getInputStream(entry));
-                     copy(inputStream, stream);
-                  } finally {
-                     if (inputStream != null)
-                        inputStream.close();
-                  }
-               } catch (IOException e) {
-                  throw new ClassNotFoundException(name, e);
-               }
-
-               return defineClass(name, stream.toByteArray(), 0, stream.size());
-            }
-         }
          String version = "1.1.0";
-         Loader loader = new Loader();
+         SingleJarClassLoader loader = new SingleJarClassLoader();
          loader.jar = jar;
          try {
-            Class<?> clz = loader.loadClass(kotlinVersionClassPath);
+            Class<?> clz = loader.loadClass(kotlinVersionClassName);
             Field field = clz.getField("CURRENT");
             Object currentVersion = field.get(null);
             version = currentVersion.toString();
@@ -385,7 +434,7 @@ public class MCKTResolver {
       static final LaunchClassLoader classLoader;
       static final URLClassLoader parentLoader;
       static final String[] modsDirs = new String[]{"mods", "mods" + File.separatorChar + ForgeVersion.mcVersion};
-      static final String kotlinVersionClassPath = q("<kotlin/KotlinVersion.class>");
+      static final String kotlinVersionClassName = q("<kotlin.KotlinVersion>");
       static final EnumSet<KotlinLibrary> defaultLibs;
 
       static final FilenameFilter jarFilter = new FilenameFilter() {
@@ -411,6 +460,40 @@ public class MCKTResolver {
             defaultLibs = EnumSet.of(KotlinLibrary.KotlinStdlib);
          }
       }
+
+      public static void staticInit() {
+      }
+   }
+
+   static class SingleJarClassLoader extends ClassLoader {
+      JarFile jar;
+
+      @Override
+      protected Class<?> findClass(String name) throws ClassNotFoundException {
+         JarFile jar = this.jar;
+         if (jar == null) throw new ClassNotFoundException(name);
+         JarEntry entry = jar.getJarEntry(name.replace('.', '/') + ".class");
+         if (entry == null) return super.findClass(name);
+         ByteArrayOutputStream stream = new ByteArrayOutputStream();
+
+         try {
+            InputStream inputStream = null;
+            try {
+               inputStream = new BufferedInputStream(jar.getInputStream(entry));
+               copy(inputStream, stream);
+            } finally {
+               if (inputStream != null)
+                  inputStream.close();
+            }
+         } catch (IOException e) {
+            throw new ClassNotFoundException(name, e);
+         }
+
+         return defineClass(name, stream.toByteArray(), 0, stream.size());
+      }
+
+      public static void staticInit() {
+      }
    }
 
    static final String resolverVersionPropName = q("<com.anatawa12.minecraft-kotlin-resolver.resolver-version>");
@@ -434,7 +517,7 @@ public class MCKTResolver {
    static byte[] toHexBytes(byte[] digest) {
       byte[] chars = new byte[digest.length * 2];
       for (int i = 0; i < digest.length; i++) {
-         chars[i * 2] = (byte) hexElements[digest[i] >>> 2];
+         chars[i * 2] = (byte) hexElements[digest[i] >>> 2 & 0x0F];
          chars[i * 2 + 1] = (byte) hexElements[digest[i] & 0xF];
       }
       return chars;
@@ -472,6 +555,9 @@ public class MCKTResolver {
       }
 
       static String cacheDir = q("<.gradle/caches/modules-2/files-2.1/>");
+
+      public static void staticInit() {
+      }
    }
 
    static class MavenKotlinCacheFinder implements KotlinCacheFinder {
@@ -486,6 +572,9 @@ public class MCKTResolver {
       }
 
       static String cacheDir = q("<.m2/repository/>");
+
+      public static void staticInit() {
+      }
    }
 
    static class MCKTKotlinCacheFinder implements KotlinCacheFinder {
@@ -526,6 +615,9 @@ public class MCKTResolver {
       }
 
       static String cacheDir = q("<.cache/anatawa12-mckt-resolver/kotlin-stdlib/>");
+
+      public static void staticInit() {
+      }
    }
 
    static class DigesterOutputStream extends OutputStream {
@@ -547,6 +639,9 @@ public class MCKTResolver {
 
       @Override
       public void close() {
+      }
+
+      public static void staticInit() {
       }
    }
 
@@ -582,7 +677,8 @@ public class MCKTResolver {
       }
 
       String architectPath(String version) {
-         return groupId.replace('.', '/') + '/' + architectName + '/' + architectFileName(version);
+         return groupId.replace('.', '/') + '/' + architectName + '/' + getVersionOf(version)
+                 + '/' + architectFileName(version);
       }
 
       String dottedArchitectPath(String version) {
@@ -605,6 +701,9 @@ public class MCKTResolver {
          for (KotlinLibrary value : VALUES) {
             byName.put(value.libName, value);
          }
+      }
+
+      public static void staticInit() {
       }
    }
 
@@ -641,8 +740,8 @@ public class MCKTResolver {
 
       static int compareVersion(int[] a, int[] b) {
          if (a == b) return 0;
-         if (b == null) return -1;
-         if (a == null) return 1;
+         if (a == null) return -1;
+         if (b == null) return 1;
          if (a[0] < b[0]) return -1;
          if (a[0] > b[0]) return 1;
          if (a[1] < b[1]) return -1;
@@ -651,5 +750,12 @@ public class MCKTResolver {
          if (a[2] > b[2]) return 1;
          return 0;
       }
+
+      public static void staticInit() {
+      }
+   }
+
+   static void log(String msg) {
+      System.err.println(msg);
    }
 }
