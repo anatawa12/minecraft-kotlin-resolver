@@ -1,3 +1,9 @@
+**DEPRECATED! THIS PROJECT IS NOT GOOD BECAUSE INCOMPATIBLE WITH CORE MODS WRITTEN IN KOTLIN. 
+PLEASE USE SHADOW PLUGIN AND RELOCATE KOTLIN WITH IT!**
+
+[Here](https://gist.github.com/anatawa12/a42300df55a655327a4b67b0c9bdde80) is 
+the example gradle configuration to shadowing.
+
 # Minecraft Kotlin Resolver
 
 The single file library to resolve kotlin version between two or more mods for launchwrapper.
